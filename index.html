@@ -38,6 +38,10 @@ Deployment Notes:
       font-family: 'Inter', sans-serif;
       min-height: 100vh;
     }
+    body, button {
+      -webkit-user-select: none;
+      user-select: none;
+    }
     button, input, select, textarea { font-family: inherit; }
 
     #toast {
@@ -113,9 +117,9 @@ Deployment Notes:
     .btn-icon.invoice { background: rgba(237, 137, 54, 0.2); color: var(--accent); }
     .btn-icon.catalog { background: rgba(255, 255, 255, 0.15); color: white; }
     .btn-icon.small {
-      width: 30px;
-      height: 30px;
-      font-size: 14px;
+      width: 28px;
+      height: 28px;
+      font-size: 12px;
     }
 
     .search-container { position: relative; width: 100%; max-width: 520px; margin: 0 auto; }
@@ -1090,9 +1094,9 @@ Deployment Notes:
               `).join('')}
             </div>
             <div class="inv-stock">
-              <input class="form-control" type="number" min="0" value="${product.stockBox ?? 0}" data-field="stock-box" placeholder="Stock (Box)">
-              <input class="form-control" type="number" min="0" value="${product.stockUnit ?? 0}" data-field="stock-unit" placeholder="Stock (Unit)">
-              <input class="form-control" type="number" min="1" value="${product.itemsPerBox ?? 1}" data-field="items-per-box" placeholder="Items per box">
+              <input class="form-control" type="number" min="0" value="${product.stockBox ?? 0}" data-field="stock-box" placeholder="Box">
+              <input class="form-control" type="number" min="0" value="${product.stockUnit ?? 0}" data-field="stock-unit" placeholder="Unit">
+              <input class="form-control" type="number" min="1" value="${product.itemsPerBox ?? 1}" data-field="items-per-box" placeholder="U/Box">
             </div>
             <div class="inv-actions">
               <div class="inv-actions-left">
@@ -1832,10 +1836,9 @@ Deployment Notes:
       function bindTap(element, handler) {
         if (!element) return;
         element.addEventListener('touchend', (event) => {
-          event.preventDefault();
           lastTouchTime = Date.now();
           handler(event);
-        }, { passive: false });
+        }, { passive: true });
         element.addEventListener('click', (event) => {
           if (Date.now() - lastTouchTime < 500) return;
           handler(event);
@@ -1915,10 +1918,9 @@ Deployment Notes:
         el('searchBox').addEventListener('input', renderCatalog);
         el('catalog').addEventListener('click', handleCatalogInteraction);
         el('catalog').addEventListener('touchend', (event) => {
-          event.preventDefault();
           lastTouchTime = Date.now();
           handleCatalogInteraction(event);
-        }, { passive: false });
+        }, { passive: true });
         el('catalog').addEventListener('input', (event) => {
           const target = event.target;
           const productId = target.dataset.id;
