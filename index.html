@@ -89,9 +89,9 @@ Deployment Notes:
 
     .topbar-actions {
       display: flex;
-      gap: 8px;
+      gap: 6px;
       align-items: center;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
     }
 
     .btn-icon {
@@ -116,11 +116,6 @@ Deployment Notes:
     .btn-icon.save { background: rgba(72, 187, 120, 0.2); color: var(--good); }
     .btn-icon.invoice { background: rgba(237, 137, 54, 0.2); color: var(--accent); }
     .btn-icon.catalog { background: rgba(255, 255, 255, 0.15); color: white; }
-    .btn-icon.small {
-      width: 28px;
-      height: 28px;
-      font-size: 12px;
-    }
 
     .search-container { position: relative; width: 100%; max-width: 520px; margin: 0 auto; }
     .search-input, .customer-input {
@@ -655,7 +650,7 @@ Deployment Notes:
         <button class="btn-icon clear" id="btnClear" title="Clear Cart">🧹</button>
         <button class="btn-icon save" id="btnSave" title="Save Draft">💾</button>
         <button class="btn-icon invoice" id="btnInvoice" title="Create Sales Order">🧾</button>
-        <button class="btn-icon catalog small" id="btnCatalogPdf" title="Print Catalog PDF">🖨️</button>
+        <button class="btn-icon catalog" id="btnCatalogPdf" title="Print Catalog PDF">🖨️</button>
       </div>
       <div class="search-container">
         <span class="search-icon">🔍</span>
