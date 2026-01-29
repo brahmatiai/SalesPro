@@ -71,6 +71,7 @@ Deployment Notes:
       flex-direction: column;
       gap: 10px;
       padding: 10px 12px 12px;
+      overflow: hidden;
     }
 
     .topbar-row {
@@ -82,9 +83,9 @@ Deployment Notes:
 
     .topbar-row.primary {
       display: grid;
-      grid-template-columns: auto 1fr auto;
+      grid-template-columns: max-content minmax(0, 1fr) max-content;
       align-items: center;
-      gap: 12px;
+      gap: 8px;
     }
 
     .topbar-actions {
@@ -92,6 +93,8 @@ Deployment Notes:
       gap: 6px;
       align-items: center;
       flex-wrap: nowrap;
+      overflow: hidden;
+      min-width: 0;
     }
 
     .btn-icon {
@@ -105,6 +108,8 @@ Deployment Notes:
       place-items: center;
       cursor: pointer;
       font-size: 16px;
+      line-height: 1;
+      flex: 0 0 auto;
       transition: transform 0.1s ease, opacity 0.2s ease;
     }
 
