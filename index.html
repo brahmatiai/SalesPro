@@ -4,10 +4,21 @@ Developer Notes:
 - Added Firebase Authentication (Email/Password) and Firestore persistence, replacing localStorage as the source of truth.
 - Added per-user state loading/saving with debounced writes, plus a UID-scoped local cache for offline feel.
 - Introduced an auth screen, sign-out control, and a visible error banner for initialization/auth/database failures.
+- Moved product images to Firebase Storage with metadata + download URLs stored in Firestore (no base64 in Firestore).
 
 Deployment Notes:
 - Host this single file on Firebase Hosting (HTTPS required).
 - CDN dependencies: jsPDF, jsPDF AutoTable, SheetJS (XLSX), Firebase modular SDK.
+
+Recommended Storage Rules:
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /users/{uid}/{allPaths=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
 -->
 <html lang="en">
 <head>
@@ -488,6 +499,15 @@ Deployment Notes:
       width: 60px;
     }
     .qty-input.active { color: var(--good); }
+    .qty-input {
+      appearance: textfield;
+      -moz-appearance: textfield;
+    }
+    .qty-input::-webkit-outer-spin-button,
+    .qty-input::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
     .qty-zero {
       width: 34px;
       height: 34px;
@@ -958,6 +978,13 @@ Deployment Notes:
       getDoc,
       serverTimestamp
     } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+    import {
+      getStorage,
+      ref,
+      uploadBytes,
+      getDownloadURL,
+      deleteObject
+    } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-storage.js";
 
     document.addEventListener('DOMContentLoaded', () => {
       console.log('[SalesPro] Initializing app...');
@@ -973,15 +1000,16 @@ Deployment Notes:
       let app = null;
       let auth = null;
       let db = null;
+      let storage = null;
 
       const el = (id) => document.getElementById(id);
       let activeImageProductId = null;
-      let lastTouchTime = 0;
       let currentUser = null;
       let isHydrating = false;
       let saveTimer = null;
       let parseWarning = '';
       let hasBoundEvents = false;
+      const imagePreviewUrls = new Map();
 
       const defaultState = {
         products: [
@@ -994,7 +1022,10 @@ Deployment Notes:
               { label: 'Box', price: 380.0 },
               { label: 'Case', price: 3600.0 }
             ],
-            image: '',
+            imageUrl: '',
+            imageStoragePath: '',
+            imageContentType: '',
+            imageSizeBytes: 0,
             stockBox: 0,
             stockUnit: 0,
             itemsPerBox: 1
@@ -1008,7 +1039,10 @@ Deployment Notes:
               { label: 'Box', price: 240.0 },
               { label: 'Case', price: 2200.0 }
             ],
-            image: '',
+            imageUrl: '',
+            imageStoragePath: '',
+            imageContentType: '',
+            imageSizeBytes: 0,
             stockBox: 0,
             stockUnit: 0,
             itemsPerBox: 1
@@ -1045,6 +1079,7 @@ Deployment Notes:
           app = initializeApp(firebaseConfig);
           auth = getAuth(app);
           db = getFirestore(app);
+          storage = getStorage(app);
         } catch (error) {
           console.error('[SalesPro] Firebase initialization failed', error);
           showErrorBanner('App failed to initialize. Open Console for details.');
@@ -1069,7 +1104,7 @@ Deployment Notes:
 
       function mergeState(data) {
         if (!data) return { ...defaultState };
-        return {
+        const merged = {
           ...defaultState,
           ...data,
           settings: { ...defaultState.settings, ...(data.settings || {}) },
@@ -1080,6 +1115,14 @@ Deployment Notes:
           savedOrders: Array.isArray(data.savedOrders) ? data.savedOrders : [],
           history: Array.isArray(data.history) ? data.history : []
         };
+        merged.products = merged.products.map((product) => ({
+          ...product,
+          imageUrl: typeof product.imageUrl === 'string' ? product.imageUrl : '',
+          imageStoragePath: product.imageStoragePath || '',
+          imageContentType: product.imageContentType || '',
+          imageSizeBytes: Number(product.imageSizeBytes || 0)
+        }));
+        return merged;
       }
 
       function getCacheKey(uid) {
@@ -1127,6 +1170,7 @@ Deployment Notes:
           }
           renderAll();
           clearErrorBanner();
+          await migrateLegacyImages(uid);
         } catch (error) {
           console.error('[SalesPro] Firestore load failed', error);
           if (error?.code === 'permission-denied') {
@@ -1160,6 +1204,108 @@ Deployment Notes:
           cacheState(currentUser.uid, state);
           saveStateToFirestore(currentUser.uid, state);
         }, 800);
+      }
+
+      function getImagePreview(productId) {
+        return imagePreviewUrls.get(productId) || '';
+      }
+
+      function revokeImagePreview(productId) {
+        const url = imagePreviewUrls.get(productId);
+        if (url) {
+          URL.revokeObjectURL(url);
+          imagePreviewUrls.delete(productId);
+        }
+      }
+
+      function clearImagePreviews() {
+        for (const productId of imagePreviewUrls.keys()) {
+          revokeImagePreview(productId);
+        }
+      }
+
+      function createImageId() {
+        return (crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+      }
+
+      async function compressImage(file, maxDimension = 1600, quality = 0.75) {
+        try {
+          const imageBitmap = await createImageBitmap(file);
+          const scale = Math.min(1, maxDimension / Math.max(imageBitmap.width, imageBitmap.height));
+          const targetWidth = Math.round(imageBitmap.width * scale);
+          const targetHeight = Math.round(imageBitmap.height * scale);
+          const canvas = document.createElement('canvas');
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(imageBitmap, 0, 0, targetWidth, targetHeight);
+          const blob = await new Promise((resolve) =>
+            canvas.toBlob(resolve, 'image/webp', quality)
+          );
+          if (!blob) throw new Error('Image compression failed');
+          return { blob, contentType: 'image/webp' };
+        } catch (error) {
+          console.warn('[SalesPro] Image compression failed, using original', error);
+          return { blob: file, contentType: file.type || 'image/jpeg' };
+        }
+      }
+
+      async function uploadUserImage(uid, file, opts = {}) {
+        if (!storage) throw new Error('Storage not initialized');
+        const imageId = opts.imageId || createImageId();
+        const { blob, contentType } = await compressImage(file);
+        const extension = contentType.includes('webp') ? 'webp' : (contentType.split('/')[1] || 'jpg');
+        const path = `users/${uid}/images/${imageId}.${extension}`;
+        const imageRef = ref(storage, path);
+        await uploadBytes(imageRef, blob, { contentType });
+        const url = await getDownloadURL(imageRef);
+        return {
+          url,
+          path,
+          contentType,
+          sizeBytes: blob.size
+        };
+      }
+
+      async function deleteStoredImage(storagePath) {
+        if (!storagePath || !storage) return;
+        try {
+          const imageRef = ref(storage, storagePath);
+          await deleteObject(imageRef);
+        } catch (error) {
+          console.warn('[SalesPro] Storage delete failed', error);
+        }
+      }
+
+      function dataUrlToBlob(dataUrl) {
+        const [header, data] = dataUrl.split(',');
+        const match = header.match(/data:(.*?);base64/);
+        const contentType = match ? match[1] : 'image/png';
+        const binary = atob(data || '');
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        return new Blob([bytes], { type: contentType });
+      }
+
+      async function migrateLegacyImages(uid) {
+        const legacyProducts = state.products.filter((product) => product.imageUrl?.startsWith('data:'));
+        if (!legacyProducts.length) return;
+        for (const product of legacyProducts) {
+          try {
+            const blob = dataUrlToBlob(product.imageUrl);
+            const upload = await uploadUserImage(uid, blob);
+            product.imageUrl = upload.url;
+            product.imageStoragePath = upload.path;
+            product.imageContentType = upload.contentType;
+            product.imageSizeBytes = upload.sizeBytes;
+          } catch (error) {
+            console.error('[SalesPro] Storage upload failed during migration', error);
+          }
+        }
+        saveState();
+        renderCatalog();
       }
 
       function saveState() {
@@ -1268,9 +1414,9 @@ Deployment Notes:
           card.innerHTML = `
             <div class="selection-toggle"></div>
             <div class="card-media">
-              ${product.image ? `<img src="${product.image}" alt="${product.name}">` : '<span class="card-placeholder">📦</span>'}
+              ${(product.imageUrl || getImagePreview(product.id)) ? `<img src="${product.imageUrl || getImagePreview(product.id)}" alt="${product.name}">` : '<span class="card-placeholder">📦</span>'}
               <div class="card-tag">${product.code}</div>
-              ${product.image ? '' : `<button class="image-add-btn" type="button" data-action="image" data-id="${product.id}">Add Image</button>`}
+              ${(product.imageUrl || getImagePreview(product.id)) ? '' : `<button class="image-add-btn" type="button" data-action="image" data-id="${product.id}">Add Image</button>`}
             </div>
             <div class="card-body">
               <div class="card-title">${product.name}</div>
@@ -1312,12 +1458,14 @@ Deployment Notes:
         container.appendChild(addTile);
       }
 
-      function setQuantity(productId, value) {
+      function setQuantity(productId, value, options = {}) {
         const next = Math.max(0, Number(value) || 0);
         state.quantities[productId] = next;
         saveState();
-        renderCatalog();
         updateTotals();
+        if (!options.silent) {
+          renderCatalog();
+        }
       }
 
       function renderInventory() {
@@ -1352,7 +1500,7 @@ Deployment Notes:
             <div class="inv-actions">
               <div class="inv-actions-left">
                 <button class="btn btn-secondary" data-action="copy-product">⧉ Copy</button>
-                ${product.image ? '<button class="btn btn-secondary" data-action="remove-image">Remove Image</button>' : '<span class="pill">No image</span>'}
+                ${(product.imageUrl || getImagePreview(product.id)) ? '<button class="btn btn-secondary" data-action="remove-image">Remove Image</button>' : '<span class="pill">No image</span>'}
               </div>
               <div class="btn-del" title="Delete">✕</div>
             </div>
@@ -1391,7 +1539,12 @@ Deployment Notes:
           const removeImageBtn = row.querySelector('[data-action="remove-image"]');
           if (removeImageBtn) {
             removeImageBtn.addEventListener('click', () => {
-              product.image = '';
+              deleteStoredImage(product.imageStoragePath);
+              product.imageUrl = '';
+              product.imageStoragePath = '';
+              product.imageContentType = '';
+              product.imageSizeBytes = 0;
+              revokeImagePreview(product.id);
               saveState();
               renderCatalog();
               renderInventory();
@@ -1414,9 +1567,11 @@ Deployment Notes:
           }
 
           row.querySelector('.btn-del').addEventListener('click', () => {
+            deleteStoredImage(product.imageStoragePath);
             state.products = state.products.filter((item) => item.id !== product.id);
             delete state.quantities[product.id];
             delete state.selectedUnits[product.id];
+            revokeImagePreview(product.id);
             saveState();
             renderCatalog();
             renderInventory();
@@ -1612,7 +1767,10 @@ Deployment Notes:
             { label: unit2, price: price2 },
             { label: unit3, price: price3 }
           ],
-          image: '',
+          imageUrl: '',
+          imageStoragePath: '',
+          imageContentType: '',
+          imageSizeBytes: 0,
           stockBox: 0,
           stockUnit: 0,
           itemsPerBox: 1
@@ -1648,7 +1806,10 @@ Deployment Notes:
             { label: unit2, price: price2 },
             { label: unit3, price: price3 }
           ],
-          image: '',
+          imageUrl: '',
+          imageStoragePath: '',
+          imageContentType: '',
+          imageSizeBytes: 0,
           stockBox: 0,
           stockUnit: 0,
           itemsPerBox: 1
@@ -1758,7 +1919,25 @@ Deployment Notes:
         notify('Inventory PDF saved.');
       }
 
-      function handleCatalogPdf() {
+      async function fetchImageData(url) {
+        try {
+          const response = await fetch(url);
+          if (!response.ok) throw new Error('Failed to load image');
+          const blob = await response.blob();
+          const dataUrl = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.readAsDataURL(blob);
+          });
+          const format = blob.type.includes('png') ? 'PNG' : 'JPEG';
+          return { dataUrl, format };
+        } catch (error) {
+          console.warn('[SalesPro] Image fetch failed', error);
+          return null;
+        }
+      }
+
+      async function handleCatalogPdf() {
         const { jsPDF } = window.jspdf;
         const doc = new jsPDF({ unit: 'pt', format: 'a4' });
         const pageWidth = doc.internal.pageSize.getWidth();
@@ -1777,17 +1956,11 @@ Deployment Notes:
           doc.rect(0, 0, pageWidth, pageHeight, 'F');
         };
 
-        const getImageFormat = (data) => {
-          if (!data) return null;
-          if (data.startsWith('data:image/png')) return 'PNG';
-          if (data.startsWith('data:image/jpeg') || data.startsWith('data:image/jpg')) return 'JPEG';
-          return null;
-        };
-
         drawPageBackground();
         doc.setFontSize(9);
 
-        state.products.forEach((product, index) => {
+        for (let index = 0; index < state.products.length; index += 1) {
+          const product = state.products[index];
           if (y + cardHeight > pageHeight - margin) {
             doc.addPage();
             drawPageBackground();
@@ -1795,9 +1968,15 @@ Deployment Notes:
             y = margin;
           }
 
-          const format = getImageFormat(product.image || '');
-          if (format) {
-            doc.addImage(product.image, format, x, y, imageSize, imageSize);
+          if (product.imageUrl) {
+            const imageData = await fetchImageData(product.imageUrl);
+            if (imageData) {
+              doc.addImage(imageData.dataUrl, imageData.format, x, y, imageSize, imageSize);
+            } else {
+              doc.setDrawColor(220);
+              doc.rect(x, y, imageSize, imageSize);
+              doc.text('No Image', x + imageSize / 2, y + imageSize / 2, { align: 'center' });
+            }
           } else {
             doc.setDrawColor(220);
             doc.rect(x, y, imageSize, imageSize);
@@ -1821,7 +2000,7 @@ Deployment Notes:
           } else {
             x += cardWidth + gap;
           }
-        });
+        }
 
         doc.save('catalog.pdf');
         notify('Catalog PDF saved.');
@@ -1838,6 +2017,10 @@ Deployment Notes:
             notify('No rows found in file.', 'error');
             return;
           }
+          state.products.forEach((product) => {
+            deleteStoredImage(product.imageStoragePath);
+            revokeImagePreview(product.id);
+          });
           const newProducts = rows.map((row) => ({
             id: `p-${Date.now()}-${Math.random().toString(16).slice(2)}`,
             name: row.Name || row.name || row.Product || 'Unnamed',
@@ -1847,7 +2030,10 @@ Deployment Notes:
               { label: row.Unit2 || 'Unit 2', price: Number(row.Price2 || 0) },
               { label: row.Unit3 || 'Unit 3', price: Number(row.Price3 || 0) }
             ],
-            image: '',
+            imageUrl: '',
+            imageStoragePath: '',
+            imageContentType: '',
+            imageSizeBytes: 0,
             stockBox: Number(row.StockBox || 0),
             stockUnit: Number(row.StockUnit || 0),
             itemsPerBox: Number(row.ItemsPerBox || 1)
@@ -2086,12 +2272,8 @@ Deployment Notes:
 
       function bindTap(element, handler) {
         if (!element) return;
-        element.addEventListener('touchend', (event) => {
-          lastTouchTime = Date.now();
-          handler(event);
-        }, { passive: true });
-        element.addEventListener('click', (event) => {
-          if (Date.now() - lastTouchTime < 500) return;
+        element.addEventListener('pointerup', (event) => {
+          event.preventDefault();
           handler(event);
         });
       }
@@ -2161,6 +2343,10 @@ Deployment Notes:
         });
         bindTap(el('btnResetAll'), () => {
           if (confirm('Reset all app data? This cannot be undone.')) {
+            state.products.forEach((product) => {
+              deleteStoredImage(product.imageStoragePath);
+              revokeImagePreview(product.id);
+            });
             state = { ...defaultState };
             saveState();
             renderAll();
@@ -2169,17 +2355,18 @@ Deployment Notes:
         });
 
         el('searchBox').addEventListener('input', renderCatalog);
-        el('catalog').addEventListener('click', handleCatalogInteraction);
-        el('catalog').addEventListener('touchend', (event) => {
-          lastTouchTime = Date.now();
+        el('catalog').addEventListener('pointerup', (event) => {
+          if (event.target?.dataset?.action) {
+            event.preventDefault();
+          }
           handleCatalogInteraction(event);
-        }, { passive: true });
+        });
         el('catalog').addEventListener('input', (event) => {
           const target = event.target;
           const productId = target.dataset.id;
           if (!productId) return;
           if (target.classList.contains('qty-input')) {
-            setQuantity(productId, target.value);
+            setQuantity(productId, target.value, { silent: true });
           }
           if (target.dataset.action === 'deduction') {
             state.deductions[productId] = target.value;
@@ -2229,19 +2416,32 @@ Deployment Notes:
         el('imagePicker').addEventListener('change', (event) => {
           const file = event.target.files[0];
           if (!file || !activeImageProductId) return;
-          const reader = new FileReader();
-          reader.onload = (loadEvent) => {
-            const product = state.products.find((item) => item.id === activeImageProductId);
-            if (product) {
-              product.image = loadEvent.target.result;
+          const product = state.products.find((item) => item.id === activeImageProductId);
+          if (!product) return;
+          const previewUrl = URL.createObjectURL(file);
+          revokeImagePreview(product.id);
+          imagePreviewUrls.set(product.id, previewUrl);
+          renderCatalog();
+          (async () => {
+            try {
+              if (!currentUser) throw new Error('Not authenticated');
+              const upload = await uploadUserImage(currentUser.uid, file);
+              product.imageUrl = upload.url;
+              product.imageStoragePath = upload.path;
+              product.imageContentType = upload.contentType;
+              product.imageSizeBytes = upload.sizeBytes;
+              revokeImagePreview(product.id);
               saveState();
               renderCatalog();
               renderInventory();
               notify('Image added.');
+            } catch (error) {
+              console.error('[SalesPro] Storage upload failed', error);
+              notify('Image upload failed. See console.', 'error');
+            } finally {
+              activeImageProductId = null;
             }
-            activeImageProductId = null;
-          };
-          reader.readAsDataURL(file);
+          })();
           event.target.value = '';
         });
 
@@ -2268,6 +2468,7 @@ Deployment Notes:
       }
 
       function resetStateForSignOut() {
+        clearImagePreviews();
         state = { ...defaultState };
         parseWarning = '';
         renderAll();
