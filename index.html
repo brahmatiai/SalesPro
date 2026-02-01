@@ -1,9 +1,13 @@
 <!DOCTYPE html>
 <!--
+Developer Notes:
+- Added Firebase Authentication (Email/Password) and Firestore persistence, replacing localStorage as the source of truth.
+- Added per-user state loading/saving with debounced writes, plus a UID-scoped local cache for offline feel.
+- Introduced an auth screen, sign-out control, and a visible error banner for initialization/auth/database failures.
+
 Deployment Notes:
-- Host this single file on Netlify, Vercel, or GitHub Pages (any static host works).
-- Ensure the file is served over HTTPS.
-- CDN dependencies: jsPDF, jsPDF AutoTable, SheetJS (XLSX).
+- Host this single file on Firebase Hosting (HTTPS required).
+- CDN dependencies: jsPDF, jsPDF AutoTable, SheetJS (XLSX), Firebase modular SDK.
 -->
 <html lang="en">
 <head>
@@ -56,6 +60,78 @@ Deployment Notes:
       z-index: 9999;
       display: none;
       box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+    }
+
+    #errorBanner {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      padding: 10px 16px;
+      background: #c53030;
+      color: #fff5f5;
+      font-weight: 600;
+      text-align: center;
+      z-index: 10000;
+      display: none;
+      border-bottom: 1px solid rgba(0,0,0,0.2);
+    }
+
+    #authScreen {
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(circle at top, rgba(229, 62, 62, 0.2), rgba(15, 18, 24, 0.95));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      z-index: 120;
+    }
+
+    #authCard {
+      width: min(420px, 100%);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: var(--shadow);
+      display: grid;
+      gap: 12px;
+    }
+
+    #authCard h2 {
+      margin: 0;
+      font-size: 20px;
+    }
+
+    #authCard .auth-actions {
+      display: grid;
+      gap: 8px;
+    }
+
+    #authCard .auth-inline {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    #authMessage {
+      font-size: 13px;
+      color: var(--text-muted);
+      min-height: 18px;
+    }
+
+    #authError {
+      font-size: 13px;
+      color: #feb2b2;
+      min-height: 18px;
+    }
+
+    #appRoot.hidden {
+      display: none;
     }
 
     .topbar {
@@ -459,6 +535,14 @@ Deployment Notes:
     .btn-primary { background: var(--good); color: #0b0f16; }
     .btn-secondary { background: var(--text); color: #0b0f16; }
     .btn-info { background: var(--info); color: white; }
+    .btn-tertiary {
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px dashed var(--border);
+      min-width: auto;
+      padding: 8px 12px;
+      font-weight: 600;
+    }
 
     .overlay {
       position: fixed;
@@ -650,52 +734,79 @@ Deployment Notes:
 </head>
 <body>
   <div id="toast"></div>
+  <div id="errorBanner">App failed to initialize. Open Console for details.</div>
 
-  <div class="topbar">
-    <div class="topbar-row primary">
-      <div class="topbar-actions">
-        <button class="btn-icon home" id="btnHome" title="Back to Home">🏠</button>
-        <button class="btn-icon settings" id="btnSettings" title="Edit/Settings">✎</button>
-        <button class="btn-icon clear" id="btnClear" title="Clear Cart">🧹</button>
-        <button class="btn-icon save" id="btnSave" title="Save Draft">💾</button>
-        <button class="btn-icon invoice" id="btnInvoice" title="Create Sales Order">🧾</button>
-        <button class="btn-icon catalog-action" id="btnCatalogPdf" title="Print Catalog PDF">🖨️</button>
+  <div id="authScreen">
+    <div id="authCard">
+      <h2>Sign in to SalesPro</h2>
+      <div class="form-group">
+        <label class="form-label" for="authEmail">Email</label>
+        <input class="form-control" id="authEmail" type="email" placeholder="you@example.com" autocomplete="email">
       </div>
-      <div class="search-container">
-        <span class="search-icon">🔍</span>
-        <input type="text" class="search-input" id="searchBox" placeholder="Search products or code...">
+      <div class="form-group">
+        <label class="form-label" for="authPassword">Password</label>
+        <input class="form-control" id="authPassword" type="password" placeholder="••••••••" autocomplete="current-password">
       </div>
-      <div class="topbar-actions">
-        <button class="btn-icon" id="btnFullscreen" title="Fullscreen">⛶</button>
+      <div id="authMessage"></div>
+      <div id="authError"></div>
+      <div class="auth-actions">
+        <button class="btn btn-primary" id="btnSignIn">Sign In</button>
+        <button class="btn btn-secondary" id="btnCreateAccount">Create Account</button>
       </div>
-    </div>
-    <div class="topbar-row">
-      <input type="text" class="customer-input" id="customerName" placeholder="Customer Name">
-      <button class="saved-toggle" id="btnSavedToggle">Saved ▾</button>
+      <div class="auth-inline">
+        <button class="btn btn-tertiary" id="btnForgotPassword" type="button">Forgot password?</button>
+        <span>Secure sign-in with Firebase</span>
+      </div>
     </div>
   </div>
 
-  <div class="saved-panel" id="savedPanel"></div>
-  <div class="customer-history-panel" id="customerHistoryPanel"></div>
-
-  <main class="app-shell">
-    <div class="catalog" id="catalog"></div>
-  </main>
-
-  <div class="dock">
-    <div>
-      <div class="pill">Total Due</div>
-      <div class="dock-total" id="dockTotal">$0.00</div>
+  <div id="appRoot" class="hidden">
+    <div class="topbar">
+      <div class="topbar-row primary">
+        <div class="topbar-actions">
+          <button class="btn-icon home" id="btnHome" title="Back to Home">🏠</button>
+          <button class="btn-icon settings" id="btnSettings" title="Edit/Settings">✎</button>
+          <button class="btn-icon clear" id="btnClear" title="Clear Cart">🧹</button>
+          <button class="btn-icon save" id="btnSave" title="Save Draft">💾</button>
+          <button class="btn-icon invoice" id="btnInvoice" title="Create Sales Order">🧾</button>
+          <button class="btn-icon catalog-action" id="btnCatalogPdf" title="Print Catalog PDF">🖨️</button>
+        </div>
+        <div class="search-container">
+          <span class="search-icon">🔍</span>
+          <input type="text" class="search-input" id="searchBox" placeholder="Search products or code...">
+        </div>
+        <div class="topbar-actions">
+          <button class="btn-icon" id="btnSignOut" title="Sign Out">⎋</button>
+          <button class="btn-icon" id="btnFullscreen" title="Fullscreen">⛶</button>
+        </div>
+      </div>
+      <div class="topbar-row">
+        <input type="text" class="customer-input" id="customerName" placeholder="Customer Name">
+        <button class="saved-toggle" id="btnSavedToggle">Saved ▾</button>
+      </div>
     </div>
-    <div class="dock-actions">
-      <button class="btn btn-secondary" id="btnSaveDock">Save</button>
-      <button class="btn btn-primary" id="btnInvoiceDock">Create Sales Order</button>
+
+    <div class="saved-panel" id="savedPanel"></div>
+    <div class="customer-history-panel" id="customerHistoryPanel"></div>
+
+    <main class="app-shell">
+      <div class="catalog" id="catalog"></div>
+    </main>
+
+    <div class="dock">
+      <div>
+        <div class="pill">Total Due</div>
+        <div class="dock-total" id="dockTotal">$0.00</div>
+      </div>
+      <div class="dock-actions">
+        <button class="btn btn-secondary" id="btnSaveDock">Save</button>
+        <button class="btn btn-primary" id="btnInvoiceDock">Create Sales Order</button>
+      </div>
     </div>
-  </div>
 
-  <div class="overlay" id="overlay"></div>
+    <div class="overlay" id="overlay"></div>
 
-  <div class="drawer" id="drawer">
+    <div class="drawer" id="drawer">
     <div class="drawer-header">
       <h3 style="margin:0">Control Panel</h3>
       <button class="btn-icon" id="btnCloseDrawer">✕</button>
@@ -828,12 +939,49 @@ Deployment Notes:
 
   <input type="file" id="imagePicker" class="hidden" accept="image/*">
 
-  <script>
-    (function() {
-      const STORAGE_KEY = 'herati_salespro_v2';
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+    import {
+      getAuth,
+      onAuthStateChanged,
+      signInWithEmailAndPassword,
+      createUserWithEmailAndPassword,
+      sendPasswordResetEmail,
+      signOut
+    } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js";
+    import {
+      getFirestore,
+      doc,
+      setDoc,
+      getDoc,
+      serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+
+    document.addEventListener('DOMContentLoaded', () => {
+      console.log('[SalesPro] Initializing app...');
+      const firebaseConfig = {
+        apiKey: "AIzaSyC9rQ9tzHNQh7na-sEMx1FuC873D68DTqo",
+        authDomain: "herati-saffron-invoice.firebaseapp.com",
+        projectId: "herati-saffron-invoice",
+        storageBucket: "herati-saffron-invoice.firebasestorage.app",
+        messagingSenderId: "389276195073",
+        appId: "1:389276195073:web:1451e5698f7d9e33a16300"
+      };
+
+      let app = null;
+      let auth = null;
+      let db = null;
+
       const el = (id) => document.getElementById(id);
       let activeImageProductId = null;
       let lastTouchTime = 0;
+      let currentUser = null;
+      let isHydrating = false;
+      let saveTimer = null;
+      let parseWarning = '';
+      let hasBoundEvents = false;
 
       const defaultState = {
         products: [
@@ -883,7 +1031,6 @@ Deployment Notes:
       };
 
       let state = { ...defaultState };
-      let parseWarning = '';
 
       function notify(message, type = 'success') {
         const toast = el('toast');
@@ -893,30 +1040,130 @@ Deployment Notes:
         setTimeout(() => { toast.style.display = 'none'; }, 3000);
       }
 
-      function safeLoad() {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return;
+      function initializeFirebase() {
         try {
-          const data = JSON.parse(raw);
-          state = {
-            ...defaultState,
-            ...data,
-            settings: { ...defaultState.settings, ...(data.settings || {}) },
-            quantities: { ...(data.quantities || {}) },
-            selectedUnits: { ...(data.selectedUnits || {}) },
-            deductions: { ...(data.deductions || {}) },
-            products: Array.isArray(data.products) ? data.products : defaultState.products,
-            savedOrders: Array.isArray(data.savedOrders) ? data.savedOrders : [],
-            history: Array.isArray(data.history) ? data.history : []
-          };
+          app = initializeApp(firebaseConfig);
+          auth = getAuth(app);
+          db = getFirestore(app);
         } catch (error) {
-          parseWarning = 'Stored data was corrupted and has been reset.';
-          state = { ...defaultState };
+          console.error('[SalesPro] Firebase initialization failed', error);
+          showErrorBanner('App failed to initialize. Open Console for details.');
+          throw error;
         }
       }
 
+      function showErrorBanner(message) {
+        const banner = el('errorBanner');
+        banner.textContent = message;
+        banner.style.display = 'block';
+      }
+
+      function clearErrorBanner() {
+        el('errorBanner').style.display = 'none';
+      }
+
+      function updateAuthMessage(message = '', isError = false) {
+        el('authMessage').textContent = isError ? '' : message;
+        el('authError').textContent = isError ? message : '';
+      }
+
+      function mergeState(data) {
+        if (!data) return { ...defaultState };
+        return {
+          ...defaultState,
+          ...data,
+          settings: { ...defaultState.settings, ...(data.settings || {}) },
+          quantities: { ...(data.quantities || {}) },
+          selectedUnits: { ...(data.selectedUnits || {}) },
+          deductions: { ...(data.deductions || {}) },
+          products: Array.isArray(data.products) ? data.products : defaultState.products,
+          savedOrders: Array.isArray(data.savedOrders) ? data.savedOrders : [],
+          history: Array.isArray(data.history) ? data.history : []
+        };
+      }
+
+      function getCacheKey(uid) {
+        return `salespro_cache_${uid}`;
+      }
+
+      function loadCachedState(uid) {
+        const raw = localStorage.getItem(getCacheKey(uid));
+        if (!raw) return null;
+        try {
+          return mergeState(JSON.parse(raw));
+        } catch (error) {
+          parseWarning = 'Cached data was corrupted and has been reset.';
+          return null;
+        }
+      }
+
+      function cacheState(uid, nextState) {
+        try {
+          localStorage.setItem(getCacheKey(uid), JSON.stringify(nextState));
+        } catch (error) {
+          console.warn('[SalesPro] Failed to write cache', error);
+        }
+      }
+
+      async function loadStateFromFirestore(uid) {
+        isHydrating = true;
+        const cached = loadCachedState(uid);
+        if (cached) {
+          state = cached;
+          renderAll();
+        }
+
+        try {
+          const docRef = doc(db, 'users', uid, 'appState', 'main');
+          const snap = await getDoc(docRef);
+          if (snap.exists()) {
+            const data = snap.data();
+            state = mergeState(data.state || {});
+            cacheState(uid, state);
+          } else {
+            state = cached || { ...defaultState };
+            await setDoc(docRef, { state, updatedAt: serverTimestamp() });
+            cacheState(uid, state);
+          }
+          renderAll();
+          clearErrorBanner();
+        } catch (error) {
+          console.error('[SalesPro] Firestore load failed', error);
+          if (error?.code === 'permission-denied') {
+            showErrorBanner('Database permission error — check Firestore rules.');
+          } else {
+            showErrorBanner('App failed to initialize. Open Console for details.');
+          }
+        } finally {
+          isHydrating = false;
+        }
+      }
+
+      async function saveStateToFirestore(uid, nextState) {
+        try {
+          const docRef = doc(db, 'users', uid, 'appState', 'main');
+          await setDoc(docRef, { state: nextState, updatedAt: serverTimestamp() });
+        } catch (error) {
+          console.error('[SalesPro] Firestore save failed', error);
+          if (error?.code === 'permission-denied') {
+            showErrorBanner('Database permission error — check Firestore rules.');
+          } else {
+            showErrorBanner('App failed to save data. Open Console for details.');
+          }
+        }
+      }
+
+      function scheduleSave() {
+        if (!currentUser || isHydrating) return;
+        if (saveTimer) clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => {
+          cacheState(currentUser.uid, state);
+          saveStateToFirestore(currentUser.uid, state);
+        }, 800);
+      }
+
       function saveState() {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        scheduleSave();
       }
 
       function currencySymbol() {
@@ -1885,6 +2132,8 @@ Deployment Notes:
       }
 
       function bindEvents() {
+        if (hasBoundEvents) return;
+        hasBoundEvents = true;
         bindTap(el('btnHome'), handleHome);
         bindTap(el('btnSettings'), openDrawer);
         bindTap(el('btnCloseDrawer'), closeDrawer);
@@ -1899,6 +2148,7 @@ Deployment Notes:
         bindTap(el('btnInvoiceDock'), handleInvoice);
         bindTap(el('btnClear'), handleClearCart);
         bindTap(el('btnCatalogPdf'), handleCatalogPdf);
+        bindTap(el('btnSignOut'), () => handleSignOut());
 
         bindTap(el('btnExportJson'), handleExportJson);
         bindTap(el('btnExportExcel'), handleExportExcel);
@@ -1911,7 +2161,6 @@ Deployment Notes:
         });
         bindTap(el('btnResetAll'), () => {
           if (confirm('Reset all app data? This cannot be undone.')) {
-            localStorage.removeItem(STORAGE_KEY);
             state = { ...defaultState };
             saveState();
             renderAll();
@@ -1999,6 +2248,8 @@ Deployment Notes:
         document.addEventListener('fullscreenchange', () => {
           el('btnFullscreen').textContent = document.fullscreenElement ? '✕' : '⛶';
         });
+
+        console.log('[SalesPro] App event listeners attached.');
       }
 
       function renderAll() {
@@ -2011,10 +2262,136 @@ Deployment Notes:
         if (parseWarning) notify(parseWarning, 'error');
       }
 
-      safeLoad();
-      bindEvents();
-      renderAll();
-    })();
+      function setAppVisibility(isAuthenticated) {
+        el('authScreen').style.display = isAuthenticated ? 'none' : 'flex';
+        el('appRoot').classList.toggle('hidden', !isAuthenticated);
+      }
+
+      function resetStateForSignOut() {
+        state = { ...defaultState };
+        parseWarning = '';
+        renderAll();
+      }
+
+      async function handleSignIn() {
+        const email = el('authEmail').value.trim();
+        const password = el('authPassword').value;
+        if (!email || !password) {
+          updateAuthMessage('Email and password are required.', true);
+          return;
+        }
+        if (password.length < 6) {
+          updateAuthMessage('Password must be at least 6 characters.', true);
+          return;
+        }
+        updateAuthMessage('Signing in...');
+        try {
+          await signInWithEmailAndPassword(auth, email, password);
+          updateAuthMessage('');
+        } catch (error) {
+          console.error('[SalesPro] Sign-in failed', error);
+          if (error?.code === 'auth/operation-not-allowed') {
+            updateAuthMessage('Email/Password auth not enabled in Firebase Console.', true);
+          } else if (error?.code === 'auth/wrong-password' || error?.code === 'auth/user-not-found') {
+            updateAuthMessage('Incorrect email or password.', true);
+          } else {
+            updateAuthMessage('Sign-in failed. Check console for details.', true);
+          }
+        }
+      }
+
+      async function handleCreateAccount() {
+        const email = el('authEmail').value.trim();
+        const password = el('authPassword').value;
+        if (!email || !password) {
+          updateAuthMessage('Email and password are required.', true);
+          return;
+        }
+        if (password.length < 6) {
+          updateAuthMessage('Password must be at least 6 characters.', true);
+          return;
+        }
+        updateAuthMessage('Creating account...');
+        try {
+          await createUserWithEmailAndPassword(auth, email, password);
+          updateAuthMessage('Account created. Loading your workspace...');
+        } catch (error) {
+          console.error('[SalesPro] Account creation failed', error);
+          if (error?.code === 'auth/operation-not-allowed') {
+            updateAuthMessage('Email/Password auth not enabled in Firebase Console.', true);
+          } else if (error?.code === 'auth/email-already-in-use') {
+            updateAuthMessage('Email already in use. Try signing in.', true);
+          } else {
+            updateAuthMessage('Account creation failed. Check console for details.', true);
+          }
+        }
+      }
+
+      async function handleForgotPassword() {
+        const email = el('authEmail').value.trim();
+        if (!email) {
+          updateAuthMessage('Enter your email to reset the password.', true);
+          return;
+        }
+        updateAuthMessage('Sending reset email...');
+        try {
+          await sendPasswordResetEmail(auth, email);
+          updateAuthMessage('Reset email sent. Check your inbox.');
+        } catch (error) {
+          console.error('[SalesPro] Password reset failed', error);
+          if (error?.code === 'auth/operation-not-allowed') {
+            updateAuthMessage('Email/Password auth not enabled in Firebase Console.', true);
+          } else {
+            updateAuthMessage('Failed to send reset email. Check console.', true);
+          }
+        }
+      }
+
+      async function handleSignOut() {
+        if (!currentUser) return;
+        try {
+          await signOut(auth);
+        } catch (error) {
+          console.error('[SalesPro] Sign-out failed', error);
+          showErrorBanner('Failed to sign out. Open Console for details.');
+        }
+      }
+
+      function bindAuthEvents() {
+        el('btnSignIn').addEventListener('click', handleSignIn);
+        el('btnCreateAccount').addEventListener('click', handleCreateAccount);
+        el('btnForgotPassword').addEventListener('click', handleForgotPassword);
+        el('authPassword').addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') handleSignIn();
+        });
+      }
+
+      function initializeAuth() {
+        onAuthStateChanged(auth, (user) => {
+          if (user) {
+            console.log('[SalesPro] Authenticated as', user.uid);
+            currentUser = user;
+            setAppVisibility(true);
+            bindEvents();
+            loadStateFromFirestore(user.uid);
+          } else {
+            console.log('[SalesPro] Signed out');
+            currentUser = null;
+            setAppVisibility(false);
+            resetStateForSignOut();
+            clearErrorBanner();
+          }
+        }, (error) => {
+          console.error('[SalesPro] Auth state error', error);
+          showErrorBanner('App failed to initialize. Open Console for details.');
+        });
+      }
+
+      initializeFirebase();
+      bindAuthEvents();
+      initializeAuth();
+      console.log('[SalesPro] Event listeners attached for auth.');
+    });
   </script>
 
   <!--
@@ -2026,7 +2403,7 @@ Deployment Notes:
   - Quantity 0 removed from invoice
   - Total due correct
   - PDF invoice generation works
-  - localStorage persistence works
+  - Firestore persistence works
   - Reset/export works
   - Works in portrait, responsive in landscape
   -->
