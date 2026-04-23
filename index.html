@@ -865,6 +865,14 @@ service firebase.storage {
         <label class="form-label">Unit 3 Price</label>
         <input type="number" class="form-control" id="pPrice3" step="0.01" min="0">
       </div>
+      <div class="form-group">
+        <label class="form-label">Expiry Date</label>
+        <input type="date" class="form-control" id="pExpiry">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Comp At (Brand + Price)</label>
+        <input type="text" class="form-control" id="pCompAt" placeholder="Competitor Brand — Price">
+      </div>
       <button class="btn btn-info" id="btnAddProduct" style="width:100%">Add Product</button>
 
       <div class="section-title">Inventory List</div>
@@ -953,6 +961,14 @@ service firebase.storage {
         <label class="form-label">Unit 3 Price</label>
         <input type="number" class="form-control" id="qaPrice3" step="0.01" min="0">
       </div>
+      <div class="form-group">
+        <label class="form-label">Expiry Date</label>
+        <input type="date" class="form-control" id="qaExpiry">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Comp At (Brand + Price)</label>
+        <input type="text" class="form-control" id="qaCompAt" placeholder="Competitor Brand — Price">
+      </div>
       <button class="btn btn-info" id="btnQuickAddSave" style="width:100%">Add to Inventory</button>
     </div>
   </div>
@@ -1026,6 +1042,8 @@ service firebase.storage {
             imageStoragePath: '',
             imageContentType: '',
             imageSizeBytes: 0,
+            expiryDate: '',
+            compAt: '',
             stockBox: 0,
             stockUnit: 0,
             itemsPerBox: 1
@@ -1043,6 +1061,8 @@ service firebase.storage {
             imageStoragePath: '',
             imageContentType: '',
             imageSizeBytes: 0,
+            expiryDate: '',
+            compAt: '',
             stockBox: 0,
             stockUnit: 0,
             itemsPerBox: 1
@@ -1120,7 +1140,9 @@ service firebase.storage {
           imageUrl: typeof product.imageUrl === 'string' ? product.imageUrl : '',
           imageStoragePath: product.imageStoragePath || '',
           imageContentType: product.imageContentType || '',
-          imageSizeBytes: Number(product.imageSizeBytes || 0)
+          imageSizeBytes: Number(product.imageSizeBytes || 0),
+          expiryDate: product.expiryDate || '',
+          compAt: product.compAt || ''
         }));
         return merged;
       }
@@ -1424,6 +1446,10 @@ service firebase.storage {
                 <span>${formatMoney(getUnit(product, unitIndex).price)} / ${getUnit(product, unitIndex).label}</span>
                 <span>Stock: ${getStockDisplay(product)}</span>
               </div>
+              <div class="card-meta" style="color: var(--text-muted); font-weight: 600;">
+                <span>Expiry: ${product.expiryDate || '—'}</span>
+                <span>Comp At: ${product.compAt || '—'}</span>
+              </div>
               <div class="unit-options">
                 ${product.units.map((unit, index) => `
                     <button class="unit-option ${index === unitIndex ? 'active' : ''} ${index === 2 ? 'disabled' : ''}" ${index === 2 ? 'disabled' : ''} data-action="${index === 2 ? '' : 'unit'}" data-id="${product.id}" data-unit-index="${index}" type="button">
@@ -1484,6 +1510,10 @@ service firebase.storage {
               <input class="form-control" value="${product.name}" data-field="name" />
               <input class="form-control" value="${product.code}" data-field="code" />
             </div>
+            <div class="inv-row">
+              <input class="form-control" value="${product.expiryDate || ''}" data-field="expiryDate" placeholder="Expiry Date (YYYY-MM-DD)" />
+              <input class="form-control" value="${product.compAt || ''}" data-field="compAt" placeholder="Comp At (Brand — Price)" />
+            </div>
             <div class="inv-units">
               ${product.units.map((unit, index) => `
                 <div class="inv-unit">
@@ -1511,6 +1541,12 @@ service firebase.storage {
               const field = event.target.dataset.field;
               if (field === 'name' || field === 'code') {
                 product[field] = event.target.value.trim();
+              }
+              if (field === 'expiryDate') {
+                product.expiryDate = event.target.value.trim();
+              }
+              if (field === 'compAt') {
+                product.compAt = event.target.value.trim();
               }
               if (field.startsWith('unit-label')) {
                 const index = Number(field.split('-').pop());
@@ -1771,11 +1807,13 @@ service firebase.storage {
           imageStoragePath: '',
           imageContentType: '',
           imageSizeBytes: 0,
+          expiryDate: el('pExpiry').value || '',
+          compAt: el('pCompAt').value.trim(),
           stockBox: 0,
           stockUnit: 0,
           itemsPerBox: 1
         });
-        ['pName','pCode','pUnit1','pPrice1','pUnit2','pPrice2','pUnit3','pPrice3'].forEach((id) => {
+        ['pName','pCode','pUnit1','pPrice1','pUnit2','pPrice2','pUnit3','pPrice3','pExpiry','pCompAt'].forEach((id) => {
           el(id).value = '';
         });
         saveState();
@@ -1810,11 +1848,13 @@ service firebase.storage {
           imageStoragePath: '',
           imageContentType: '',
           imageSizeBytes: 0,
+          expiryDate: el('qaExpiry').value || '',
+          compAt: el('qaCompAt').value.trim(),
           stockBox: 0,
           stockUnit: 0,
           itemsPerBox: 1
         });
-        ['qaName','qaCode','qaUnit1','qaPrice1','qaUnit2','qaPrice2','qaUnit3','qaPrice3'].forEach((id) => {
+        ['qaName','qaCode','qaUnit1','qaPrice1','qaUnit2','qaPrice2','qaUnit3','qaPrice3','qaExpiry','qaCompAt'].forEach((id) => {
           el(id).value = '';
         });
         saveState();
@@ -1885,6 +1925,8 @@ service firebase.storage {
           Price2: product.units[1]?.price,
           Unit3: product.units[2]?.label,
           Price3: product.units[2]?.price,
+          ExpiryDate: product.expiryDate || '',
+          CompAt: product.compAt || '',
           StockBox: product.stockBox ?? 0,
           StockUnit: product.stockUnit ?? 0,
           ItemsPerBox: product.itemsPerBox ?? 1
@@ -1903,7 +1945,7 @@ service firebase.storage {
         doc.text('Herati Saffron Inventory', 14, 20);
         doc.autoTable({
           startY: 28,
-          head: [['Name', 'Code', 'Unit 1', 'Price 1', 'Unit 2', 'Price 2', 'Unit 3', 'Price 3']],
+          head: [['Name', 'Code', 'Unit 1', 'Price 1', 'Unit 2', 'Price 2', 'Unit 3', 'Price 3', 'Expiry', 'Comp At']],
           body: state.products.map((product) => [
             product.name,
             product.code,
@@ -1912,7 +1954,9 @@ service firebase.storage {
             product.units[1]?.label || '',
             formatMoney(Number(product.units[1]?.price || 0)),
             product.units[2]?.label || '',
-            formatMoney(Number(product.units[2]?.price || 0))
+            formatMoney(Number(product.units[2]?.price || 0)),
+            product.expiryDate || '',
+            product.compAt || ''
           ])
         });
         doc.save('inventory.pdf');
@@ -2034,6 +2078,8 @@ service firebase.storage {
             imageStoragePath: '',
             imageContentType: '',
             imageSizeBytes: 0,
+            expiryDate: row.ExpiryDate || row.expiryDate || '',
+            compAt: row.CompAt || row.compAt || '',
             stockBox: Number(row.StockBox || 0),
             stockUnit: Number(row.StockUnit || 0),
             itemsPerBox: Number(row.ItemsPerBox || 1)
